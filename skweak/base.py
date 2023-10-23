@@ -6,12 +6,32 @@ from spacy.tokens import Doc, Span  # type: ignore
 
 from . import utils
 
+import sys
+import logging
+import time
+
+
+def create_logger(name):
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+logger = create_logger(__name__)
+
 ############################################
 # Abstract class for all annotators
 ############################################
 
+
 class AbstractAnnotator:
-    """Base class for all annotation or aggregation sources 
+    """Base class for all annotation or aggregation sources
     employed in skweak"""
 
     def __init__(self, name: str):
@@ -32,21 +52,26 @@ class AbstractAnnotator:
         for doc in docs:
             yield self(doc)
 
-    def annotate_docbin(self, docbin_input_path: str,
-                        docbin_output_path: Optional[str] = None,
-                        spacy_model_name: str = "en_core_web_md",
-                        cutoff: Optional[int] = None, nb_to_skip: int = 0):
+    def annotate_docbin(
+        self,
+        docbin_input_path: str,
+        docbin_output_path: Optional[str] = None,
+        spacy_model_name: str = "en_core_web_md",
+        cutoff: Optional[int] = None,
+        nb_to_skip: int = 0,
+    ):
         """Runs the annotator on the documents of a DocBin file, and write the output
-        to docbin_output_path (or to the same file if it is set to None). The spacy 
-        model name must be the same as the one used to create the DocBin file in the 
-        first place. 
+        to docbin_output_path (or to the same file if it is set to None). The spacy
+        model name must be the same as the one used to create the DocBin file in the
+        first place.
 
         If cutoff is set, the annotation stops after the given number of documents. If
         nb_to_skip is set, the method skips a number of documents at the start.
         """
 
-        docs = utils.docbin_reader(docbin_input_path, spacy_model_name,
-                                   cutoff=cutoff, nb_to_skip=nb_to_skip)
+        docs = utils.docbin_reader(
+            docbin_input_path, spacy_model_name, cutoff=cutoff, nb_to_skip=nb_to_skip
+        )
         new_docs = []
         for doc in self.pipe(docs):
             new_docs.append(doc)
@@ -61,32 +86,31 @@ class AbstractAnnotator:
 # Type of annotators
 ####################################################################
 
+
 class SpanAnnotator(AbstractAnnotator):
     """Generic class for the annotation of token spans"""
 
     def __init__(self, name: str):
         """Initialises the annotator with a source name"""
 
-        super(SpanAnnotator, self).__init__(name)
+        super().__init__(name)
 
         # Set of other labelling sources that have priority
         self.incompatible_sources = []
 
     # type:ignore
     def add_incompatible_sources(self, other_sources: Sequence[str]):
-        """Specifies a list of sources that are not compatible with the current 
+        """Specifies a list of sources that are not compatible with the current
         source and should take precedence over it in case of overlap"""
 
         self.incompatible_sources.extend(other_sources)
 
     def __call__(self, doc: Doc) -> Doc:
-
         # We start by clearing all existing annotations
         doc.spans[self.name] = []
 
         # And we look at all suggested spans
         for start, end, label in self.find_spans(doc):
-
             # We only add the span if it is compatible with other sources
             if self._is_allowed_span(doc, start, end):
                 span = Span(doc, start, end, label)
@@ -97,7 +121,7 @@ class SpanAnnotator(AbstractAnnotator):
     @abstractmethod
     def find_spans(self, doc: Doc) -> Iterable[Tuple[int, int, str]]:
         """Generates (start, end, label) triplets corresponding to token-level
-        spans associated with a given label. """
+        spans associated with a given label."""
 
         raise NotImplementedError("Must implement find_spans method")
 
@@ -105,31 +129,29 @@ class SpanAnnotator(AbstractAnnotator):
         """Checks whether the span is allowed (given incompatibilities with other sources)"""
 
         for other_source in self.incompatible_sources:
-
-            intervals = sorted((span.start, span.end) for span in
-                               doc.spans.get(other_source, []))
+            intervals = sorted(
+                (span.start, span.end) for span in doc.spans.get(other_source, [])
+            )
 
             # Performs a binary search to efficiently detect overlapping spans
-            start_search, end_search = utils._binary_search(
-                start, end, intervals)
+            start_search, end_search = utils._binary_search(start, end, intervals)
             for interval_start, interval_end in intervals[start_search:end_search]:
                 if start < interval_end and end > interval_start:
                     return False
         return True
-    
-    
+
+
 class TextAnnotator(AbstractAnnotator):
     """Abstract class for labelling functions used for text classification
     (the goal being to predict the label of a full document)"""
 
     def __call__(self, doc: Doc) -> Doc:
-
         # We start by clearing all existing annotations
-        
+
         doc.spans[self.name] = []
 
         result = self.get_label(doc)
-        
+
         # We only add the annotation is the function returns a label
         if result is not None:
             span = Span(doc, 0, len(doc), result)
@@ -142,7 +164,7 @@ class TextAnnotator(AbstractAnnotator):
         """Returns the label of the document as predicted by the function,
         or None if the labelling function "abstains" from giving a prediction"""
         raise NotImplementedError("Must implement get_label method")
-    
+
 
 ####################################################################
 # Combination of annotators
@@ -150,15 +172,15 @@ class TextAnnotator(AbstractAnnotator):
 
 
 class CombinedAnnotator(AbstractAnnotator):
-    """Annotator of entities in documents, combining several sub-annotators  """
+    """Annotator of entities in documents, combining several sub-annotators"""
 
     def __init__(self):
-        super(CombinedAnnotator, self).__init__("")
+        super().__init__("")
         self.annotators = []
 
     def __call__(self, doc: Doc) -> Doc:
         """Annotates a single  document with the sub-annotators
-        NB: avoid using this method for large collections of documents (as it is quite 
+        NB: avoid using this method for large collections of documents (as it is quite
         inefficient), and prefer the method pipe that runs on batches of documents.
         """
 
@@ -170,20 +192,27 @@ class CombinedAnnotator(AbstractAnnotator):
         """Annotates the stream of documents using the sub-annotators."""
 
         # We duplicate the streams of documents
-        streams = itertools.tee(docs, len(self.annotators)+1)
+        streams = itertools.tee(docs, len(self.annotators) + 1)
 
         # We create one pipe per annotator
-        pipes = [annotator.pipe(stream) for annotator, stream in
-                 zip(self.annotators, streams[1:])]
+        pipes = [
+            annotator.pipe(stream)
+            for annotator, stream in zip(self.annotators, streams[1:])
+        ]
 
-        for doc in streams[0]:
+        start = time.time()
+        for idx, doc in enumerate(streams[0]):
             for pipe in pipes:
                 try:
                     next(pipe)
                 except BaseException as e:
-                    print("ignoring document:", doc)
-                    raise e
+                    logger.warn(f"ignoring document: {doc}")
+                    logger.warn(f"{e}")
 
+            if idx % 10 == 0:
+                logger.info(
+                    f"Annotated document {idx+1} ; speed: {(time.time() - start) / (idx+1)} sec/doc"
+                )
             yield doc
 
     def add_annotator(self, annotator: AbstractAnnotator):
