@@ -101,9 +101,9 @@ class SpanMarkerModelAnnotator(ModelAnnotator):
         stream2 = (self.create_new_doc(d) for d in stream2)
 
         # And run the model
-        # for _, proc in self.model.pipeline:
-        #     stream2 = proc.pipe(stream2)
-        stream2 = self.model(stream2)
+        for _, proc in self.model.pipeline:
+            stream2 = proc.pipe(stream2)
+        # stream2 = self.model(stream2)
 
         for doc, doc_copy in zip(stream1, stream2):
             doc.spans[self.name] = []
